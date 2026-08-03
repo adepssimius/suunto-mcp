@@ -52,6 +52,41 @@ scripts/        APK acquisition and static analysis for the RE track
 docs/           captured API contracts and RE findings
 ```
 
+## Running it
+
+Tool tiers follow suuntool's: read-only by default, `--allow-write` to create and
+update, `--allow-destructive` on top of that to delete. Gating happens at
+*registration*, so a tool you have not permitted is absent from the listing
+entirely rather than present and always refusing.
+
+```bash
+claude mcp add suunto -- node /path/to/suunto-mcp/dist/mcp/main.js --allow-write
+```
+
+| Tier | Tools |
+|---|---|
+| read | `preview_workout`, `list_workouts`, `describe_backend` |
+| `--allow-write` | `create_workout`, `update_workout` |
+| `--allow-destructive` | `delete_workout` |
+
+`preview_workout` compiles and validates without uploading, and returns the
+warnings — start there.
+
+### Configuration
+
+| Variable | Purpose |
+|---|---|
+| `SUUNTO_MCP_BACKEND` | `file` (default) or `cloud` |
+| `SUUNTO_MCP_OUTPUT_DIR` | Where the file backend writes; defaults under `~/.local/share` |
+| `SUUNTO_OWNER` | Creator name. Must match the OAuth app name for the Cloud API |
+| `SUUNTO_SUBSCRIPTION_KEY` | `Ocp-Apim-Subscription-Key`, required for `cloud` |
+| `SUUNTO_ACCESS_TOKEN` | Static bearer token, for trying the API by hand |
+| `SUUNTO_CLIENT_ID` / `SUUNTO_CLIENT_SECRET` | Enables refresh of the 24h token |
+| `SUUNTO_MAX_HR`, `SUUNTO_THRESHOLD_HR`, `SUUNTO_FTP`, `SUUNTO_REST_HR` | Athlete profile, needed only for `%HRmax` / `%FTP` targets |
+
+Configuration is validated at startup and a bad config is a hard exit — an MCP
+server that starts and then fails every call is much harder to diagnose.
+
 ## Development
 
 ```bash
