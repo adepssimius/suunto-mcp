@@ -1,111 +1,157 @@
-# Private guides API — findings
+# Private guides API — confirmed
 
-**Status: not yet mapped.** This document is the target of the reverse-engineering
-track; everything below is either established context or an open question.
+**Status: fully mapped**, by static analysis of `com.stt.android.suunto` v6.11.8
+(pulled from a real device via `scripts/pull-apk.sh`, decompiled via
+`scripts/analyze-apk.sh 2`). No traffic capture was needed — R8 left the
+Retrofit interface and its DTOs with real names, and the annotation *values*
+(paths, headers) survive obfuscation regardless, since they're string
+constants Retrofit reads at runtime.
 
-## Why this track exists
+Source of every claim below: `capture/decompiled/sources/com/stt/android/device/remote/suuntoplusguide/*.java`
+(git-ignored; re-derivable any time from the pulled APK). Retrofit's own
+annotation types get R8-obfuscated to single-letter-ish names — the mapping
+below was confirmed by usage pattern, not by the annotation's own definition:
 
-The Suunto mobile app has a Workout Builder that creates structured workouts and
-syncs them to the watch as SuuntoPlus Guides. So an API for creating guides
-exists on whatever backend the app talks to. But:
+| Obfuscated | Real annotation |
+|---|---|
+| `sef` | `@GET` |
+| `yrp` | `@POST` |
+| `bsp` | `@PUT` |
+| `bpp` | `@PATCH` |
+| `p99` | `@DELETE` |
+| `sag` | `@Headers` |
+| `q5q` | `@Path` |
+| `nyr` | `@Query` |
+| `xi3` | `@Body` |
 
-- **`suuntool` does not expose it.** Its endpoint table (`cmd/endpoints.go`) is
-  entirely `/v1/workouts*` and `/v1/user*` on `api.sports-tracker.com`, plus
-  wellness streams on `247.sports-tracker.com`. Every write it supports mutates
-  an activity that *already happened* — comment, react, attributes, share,
-  upload a recorded SML, delete. Nothing plans anything.
-- **Nobody has published it.** A GitHub code search for `sports-tracker.com guide`
-  returns zero results across all public code.
+## The headline finding
 
-So the shape of the request is unknown, and the app is the only client that
-knows it.
+**This is not on `cloudapi.suunto.com`.** It's on the same Sports-Tracker ASKO
+backend `suuntool` already talks to (`https://api.sports-tracker.com/apiserver/v1/`),
+using the exact same auth (`STTAuthorization` header, session key from login)
+and the exact same response envelope suuntool's Go code calls `AskoResponse`
+(`{error, payload, metadata}` — `internal/api/envelope.go`'s `DecodeAsko[T]`
+decodes this shape already). The relative paths below hang off that base.
 
-## What is already known
+This means: **once a `suuntool` session exists, this API needs no new
+credential at all.** No OAuth, no subscription key, no partner application.
 
-**The backend.** `suuntool` documents its target as "the Suunto / Sports-Tracker
-API — the same backend the Suunto mobile app uses", base URL
-`https://api.sports-tracker.com/apiserver/v1/`. Wellness lives on a second host,
-`https://247.sports-tracker.com/`.
+## Endpoints
 
-**The auth, if the guides endpoint lives on that backend.** Reverse-engineered
-from APK `com.stt.android.suunto` v6.8.13, per `suuntool/internal/auth`:
+From `SuuntoPlusGuideRestAPI.java` (interface `SuuntoPlusGuideRestAPI`, package
+`com.stt.android.device.remote.suuntoplusguide`):
 
-- Session key travels in an `STTAuthorization` header.
-- Login is signed: `SHA-256("POST&" + path + params + "&secret=" + derivedSecret)`,
-  base64url no padding, no URL-encoding of values.
-- The secret comes from a `KeyObfuscator` XOR whose correctness depends on
-  matching Java's *lossy* `new String(bytes, UTF-8)` behaviour.
-- **Every write additionally requires an `x-totp` header** (PBKDF2-HmacSHA1 +
-  RFC 6238, with the Java `PBEKeySpec` quirk that only the low byte of each
-  password character is used). The server validates it against its own clock;
-  more than ~30s of drift returns 403.
+| Verb | Path | Method | Returns |
+|---|---|---|---|
+| Create | `POST suuntoplus/guides/files` | `uploadGuide(body)` | `AskoResponse<RemoteGuideInfo>` |
+| Update content | `PUT suuntoplus/guides/files/{guideId}` | `updateGuide(id, body)` | `AskoResponse<RemoteGuideInfo>` |
+| Delete | `DELETE suuntoplus/guides/files/{guideId}` | `deleteGuide(id)` | — |
+| List all | `GET suuntoplus/guides/items` | `fetchAll()` | `AskoResponse<List<RemoteGuideInfo>>` |
+| Priority order | `GET suuntoplus/guides/priority` | `fetchPriorityOrder()` | `AskoResponse<RemoteGuidePriorities>` |
+| Set pinned | `PATCH suuntoplus/guides/items/{guideId}` | `updatePinnedStatus(id, body)` | `AskoResponse<RemoteGuideInfo>` |
+| Download zip | `GET suuntoplus/guides/files/{guideId}` | `downloadSource(id)` | raw zip bytes |
+| Download guide.json | `GET suuntoplus/guides/json/{guideId}?capabilities=` | `downloadJsonFile(id, capabilities)` | raw JSON |
+| Download plugin | `GET suuntoplus/guides/plugins/{guideId}?capabilities=` | `downloadZAPPFile(id, capabilities)` | raw binary |
 
-Note that `suuntool`'s key material is pinned to app **v6.8.13** while the
-current app is **6.11.8**, so it may already need rotation.
+Create and update carry:
+```
+Content-Type: application/zip
+Client-Id: 5c2fa984-4425-4e72-8f7c-deeaa454b9c6
+```
+(`@Headers` on the Retrofit method — a static, app-wide value, not
+per-account. Whether the server actually requires it or just logs it is
+unconfirmed; send it regardless, it costs nothing.)
 
-## The hypothesis to test first
+**No `x-totp` header on any of these.** Grepped for it across the whole
+`suuntoplusguide` package — present on `watchkey` endpoints elsewhere in the
+app, absent here. Guide writes are simpler than comments/reactions in this
+respect.
 
-The guide icons in Cloud API responses are served from
-`suuntoplusplugins.blob.core.windows.net`, and `cloudapi.suunto.com` is Azure API
-Management. It is entirely plausible that the mobile app simply calls the
-**documented** `cloudapi.suunto.com/v2/guides/*` with a subscription key embedded
-in the APK.
+**`fetchAll()` takes no pagination parameters at all.** Unlike the documented
+Cloud API's `offset`/`limit`/`fileSince`, the mobile client fetches everything
+in one call and caches it in a local Room table (`suunto_plus_guides`, found in
+stage 1's string scan) rather than paging.
 
-If that holds, this whole track collapses: the wire format is already known (see
-`cloud-api.md`), and the only unknown is how the app authenticates.
+## Confirmed: the zip format is identical to the documented Cloud API
 
-`scripts/analyze-apk.sh` tests exactly this in its first stage, in seconds,
-without decompiling anything.
+`SaveWorkoutPlanAsGuideUseCase.buildGuideZipPackage()` (`SaveWorkoutPlanAsGuideUseCase.java`)
+takes an **already-built `guideJson` string** plus `name`/`description`, and:
 
-## Method
+1. Serialises a `GuideManifest` via Moshi — confirmed fields: `name`, `type`,
+   `owner`, `description`. Identical to the documented `manifest.json`.
+2. Packs `manifest.json` + the given `guide.json` + (presumably) `icon.png`
+   into a zip (`byte[]`).
+3. Hands the bytes to `SuuntoPlusGuideRemoteDataSource.i()` (create) or `.g()`
+   (update), which call the Retrofit methods above with `@Body RequestBody`
+   (Retrofit's real `RequestBody`, decompiled name `oet` — confirmed by its
+   own file header: `/* JADX INFO: compiled from: RequestBody.kt */`,
+   `package okhttp`).
 
-1. `scripts/pull-apk.sh` — pull the APK off the device. Preferred over a mirror:
-   no anti-bot to work around, and it captures the exact build in use.
-2. `scripts/analyze-apk.sh` — stage 1 string-scans the dex for
-   `cloudapi.suunto.com`, `Ocp-Apim-Subscription-Key`, guide paths and guide DTO
-   field names.
-3. `scripts/analyze-apk.sh 2` — full `jadx` decompile, only if stage 1 leaves
-   gaps. Retrofit `@POST("…")` annotations give exact paths; Kotlin
-   `@SerialName` annotations give the DTO field names, types and nullability.
-   This is *more* complete than traffic capture, because it covers fields no
-   hand-driven flow happens to exercise.
-4. Live capture, only to confirm payloads — see below.
+**Where `guide.json`'s actual step content gets built is upstream of this
+class** — it arrives as a pre-built string. Stage 1's string scan turned up
+`com.soy.algorithms.planner.Guide` / `GuideWorkoutPlanType`, which is almost
+certainly that builder, in a separate module. This was **not chased further**:
+it doesn't matter how Suunto's own client builds `guide.json`, only that the
+endpoint accepts a valid one — and we already have an independently-derived,
+schema-validated compiler for that (`src/compile/compile.ts`), anchored on
+Suunto's own published sample. Reversing their internal builder would be pure
+cost with no payoff here.
 
-## Live capture (only if static analysis leaves gaps)
+## Response DTOs
 
-Try **unrooted first**: `apk-mitm` repackages the APK to trust user CAs and strip
-OkHttp pinning; sideload it and proxy through `mitmproxy`. Rooting the Pixel 9 Pro
-XL needs a bootloader unlock, which **wipes the device** — don't pay that cost
-until the cheap path has actually failed. Fallback is Magisk + a cert-fixer module
-+ `frida-server`.
+`RemoteGuideInfo` (the payload of create/update/list), Moshi `@Json` names:
 
-Risk: a re-signed APK can fail login if the app checks its own signature or
-requires Play Integrity.
+```
+id, catalogueId, fileModificationTime→modifiedMillis, name, owner, ownerId,
+description, shortDescription, richText→richDescription, localDate→date,
+url, iconUrl, backgroundUrl, activities→activityIds, pinned
+```
 
-Flows worth driving: create a structured workout, edit it, pin it to a date,
-delete it, sync to watch.
+Two fields the documented Cloud API doesn't mention: `catalogueId` (presumably
+non-null only for guides installed from the SuuntoPlus Store, not
+user-created ones) and `ownerId`, `backgroundUrl`.
 
-**Also capture the guide list and download traffic.** Runna is a Suunto Cloud API
-partner and already syncs structured runs with pace targets into this account, so
-those responses are known-good, professionally-generated guides in exactly the
-shape we want to emit — a far better oracle than anything we could infer.
+`UpdatePinnedStatusBody`: `{id: string, pinned: boolean}` — sent to the PATCH
+endpoint. Confirms the documented API's note that content updates don't touch
+`pinned` is true here too: it's a genuinely separate call.
 
-## Open questions
+`RemoteGuidePriorities`: `{guides: [{id: string}]}` — just an ordered id list.
 
-- [ ] Does the app use `cloudapi.suunto.com/v2/guides/*`, or a private path?
-- [ ] If private: what host, what paths, what verbs?
-- [ ] Which auth — `STTAuthorization`, an OAuth bearer, or a baked-in
-      subscription key?
-- [ ] Is `x-totp` required on guide writes, as it is on every other
-      Sports-Tracker write?
-- [ ] Is the payload the same `guide.json` schema, a zip, or a different DTO?
-- [ ] How is calendar pinning expressed — `localDate`, or a separate call?
+## What this means for the adapter
 
-## Ground rules
+A `PrivateApiGuideBackend` is now buildable with everything already in this
+repo:
 
-Scope strictly to this account and this account's own data. The Cloud API path
-has no terms-of-service question attached, which is the reason to prefer it the
-moment a subscription key is available.
+- **Auth**: read `suuntool`'s `session.json` (`src/auth/session.ts` already
+  does this) and send it as `STTAuthorization`, exactly as `suuntool` does for
+  every other Sports-Tracker call. No `x-totp` needed for these specific
+  endpoints.
+- **Packing**: `src/package/zip.ts` already produces the right zip shape —
+  nothing to change there.
+- **Envelope**: `{error, payload, metadata}` decoding is new work, but small —
+  suuntool's Go `DecodeAsko[T]` is the reference implementation to mirror.
+- **Capabilities**: `create`/`update`/`remove`/`list` all map directly.
+  `schedule` (via `localDate` in `guide.json`) works the same way the file and
+  Cloud backends already do it. Pinning is a distinct, optional capability this
+  backend has that the others don't model yet (`suuntoplus/guides/items/{id}`
+  PATCH) — worth a `pin` capability flag if it's ever exposed as a tool.
 
-Nothing from `apk/` or `capture/` is ever committed — both are git-ignored, and
-captures contain session keys and account identifiers.
+## Remaining unknowns (low-stakes, resolvable with one real call)
+
+- [ ] Exact base URL prefix (`api.sports-tracker.com/apiserver/v1/` is
+      inferred from suuntool's own base URL and the ASKO envelope match, not
+      proven by finding the literal concatenation in code — the Retrofit
+      client's `@BaseUrl`/builder wiring wasn't tracked down). First real
+      request will confirm or correct this immediately.
+- [ ] Whether `Client-Id` is enforced or just logged.
+- [ ] Whether the account needs to be the *creator* of a guide to update/delete
+      it (mirrors the documented API's "belongs to someone else" 404), and
+      what happens to guides created by a *different* client (Client-Id).
+
+## Ground rules (unchanged)
+
+Scope strictly to this account and this account's own data — the same rule
+`suuntool`'s own author states plainly for the backend it already talks to.
+This is genuinely undocumented and unsanctioned; prefer the Cloud API the
+moment a subscription key exists. Nothing under `apk/` or `capture/` is ever
+committed — both are git-ignored.

@@ -21,7 +21,13 @@ STAGE="${1:-1}"
 
 mkdir -p "$OUT"
 
-BASE="$(find "$APK_DIR" -maxdepth 1 -name 'base.apk' -o -maxdepth 1 -name '*.apk' 2>/dev/null | head -1)"
+if [[ -f "$APK_DIR/base.apk" ]]; then
+  # base.apk carries the classes.dex (code); split_config.*.apk are
+  # density/ABI resource-only splits with no dex to scan at all.
+  BASE="$APK_DIR/base.apk"
+else
+  BASE="$(find "$APK_DIR" -maxdepth 1 -name '*.apk' 2>/dev/null | head -1)"
+fi
 if [[ -z "$BASE" ]]; then
   echo "No APK in $APK_DIR. Run scripts/pull-apk.sh first." >&2
   exit 1
