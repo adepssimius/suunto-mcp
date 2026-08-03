@@ -14,7 +14,7 @@ and they differ enough that the transport has to be a replaceable part:
 | Path | Status | Notes |
 |---|---|---|
 | Cloud API (`cloudapi.suunto.com/v2/guides`) | Documented, needs a subscription key | The sanctioned path. Contract fully captured in [docs/cloud-api.md](docs/cloud-api.md). |
-| Private mobile API | Unmapped | The Suunto app's Workout Builder uses it. See [docs/private-guides-api.md](docs/private-guides-api.md). |
+| Private mobile API (`suuntoplus/guides/*`) | Fully mapped, unsanctioned | Confirmed by static analysis of the Suunto Android app — not traffic capture. Full write-up in [docs/private-guides-api.md](docs/private-guides-api.md). Genuinely undocumented; needs no new credential (reuses a `suuntool` session), but is unconfirmed against a live account. |
 | Local zip | Works today | Emit a validated `guide.zip`; no auth involved. |
 
 `suuntool` deliberately isn't one of them: it has no guide-creation capability at
@@ -86,7 +86,7 @@ warnings — start there.
 
 | Variable | Purpose |
 |---|---|
-| `SUUNTO_MCP_BACKEND` | `file` (default) or `cloud` |
+| `SUUNTO_MCP_BACKEND` | `file` (default), `cloud`, or `private` (reuses a `suuntool` session; see the warning above) |
 | `SUUNTO_MCP_OUTPUT_DIR` | Where the file backend writes; defaults under `~/.local/share` |
 | `SUUNTO_OWNER` | Creator name. Must match the OAuth app name for the Cloud API |
 | `SUUNTO_SUBSCRIPTION_KEY` | `Ocp-Apim-Subscription-Key`, required for `cloud` |

@@ -4,10 +4,11 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { SessionTokenProvider } from '../auth/cloud-tokens.js';
-import { loadCloudSession } from '../auth/session.js';
+import { loadCloudSession, loadSuuntoolSession, suuntoolSessionPath } from '../auth/session.js';
 import { CloudApiGuideBackend, StaticTokenProvider } from '../backends/cloud-api.js';
 import { FileGuideBackend } from '../backends/file.js';
 import type { GuideBackend } from '../backends/port.js';
+import { PrivateApiGuideBackend } from '../backends/private-api.js';
 import type { AthleteProfile } from '../domain/workout.js';
 import { SuuntoolCli } from '../training/suuntool-cli.js';
 import { buildServer } from './server.js';
@@ -26,7 +27,7 @@ const optional = <T extends z.ZodTypeAny>(schema: T) =>
   z.preprocess((v) => (v === '' ? undefined : v), schema.optional());
 
 const EnvSchema = z.object({
-  SUUNTO_MCP_BACKEND: z.enum(['file', 'cloud']).default('file'),
+  SUUNTO_MCP_BACKEND: z.enum(['file', 'cloud', 'private']).default('file'),
   SUUNTO_MCP_OUTPUT_DIR: optional(z.string()),
   SUUNTO_OWNER: optional(z.string().max(64)),
   SUUNTO_URL: optional(z.url()),
@@ -61,6 +62,23 @@ function buildBackend(env: ReturnType<typeof loadEnv>): GuideBackend {
     const dir =
       env.SUUNTO_MCP_OUTPUT_DIR ?? join(homedir(), '.local', 'share', 'suunto-mcp', 'guides');
     return new FileGuideBackend(dir);
+  }
+
+  if (env.SUUNTO_MCP_BACKEND === 'private') {
+    if (!loadSuuntoolSession()) {
+      console.error(
+        `No suuntool session found at ${suuntoolSessionPath()}. Run: suuntool login`,
+      );
+      process.exit(1);
+    }
+    // Genuinely undocumented and unsanctioned — see docs/private-guides-api.md.
+    // Loud on every start, not just in the README, since this is the one
+    // backend whose behavior was never confirmed against a live account.
+    console.error(
+      'suunto-mcp: using the PRIVATE guides API (undocumented, unsanctioned). ' +
+        'Scope strictly to your own account. Prefer SUUNTO_MCP_BACKEND=cloud once you have a subscription key.',
+    );
+    return new PrivateApiGuideBackend();
   }
 
   if (!env.SUUNTO_SUBSCRIPTION_KEY) {

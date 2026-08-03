@@ -5,6 +5,7 @@ import { unzipSync } from 'fflate';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CloudApiGuideBackend, StaticTokenProvider } from '../src/backends/cloud-api.js';
 import { FileGuideBackend } from '../src/backends/file.js';
+import { PrivateApiGuideBackend } from '../src/backends/private-api.js';
 import { compile } from '../src/compile/compile.js';
 import { isSuuntoError, SuuntoError } from '../src/errors.js';
 import { pngDimensions, solidPng } from '../src/package/icon.js';
@@ -251,5 +252,127 @@ describe('CloudApiGuideBackend', () => {
     await expect(backendWith(fetchImpl as unknown as typeof fetch).list()).rejects.toThrow(
       /something odd/,
     );
+  });
+});
+
+/**
+ * All mocked — this backend is genuinely undocumented and unsanctioned, and
+ * suuntool's own contributing rules are explicit that write-side calls to the
+ * real backend are exercised by hand against a personal account, never from
+ * automation. No live request happens anywhere in this suite.
+ */
+describe('PrivateApiGuideBackend', () => {
+  const envelope = (payload: unknown) =>
+    new Response(JSON.stringify({ error: null, payload, metadata: { ts: '1' } }), { status: 200 });
+
+  function backendWith(fetchImpl: typeof fetch) {
+    return new PrivateApiGuideBackend({ sessionKey: 'test-session-key', fetchImpl });
+  }
+
+  it('posts to suuntoplus/guides/files with STTAuthorization, Client-Id, and a raw zip body', async () => {
+    const fetchImpl = vi.fn(async () =>
+      envelope({ id: 'abc', name: 'Easy 40', fileModificationTime: 123, pinned: false }),
+    );
+    const packed = pack();
+    const ref = await backendWith(fetchImpl as unknown as typeof fetch).create(packed);
+
+    expect(ref).toMatchObject({ id: 'abc', name: 'Easy 40', modificationTime: 123, pinned: false });
+
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://api.sports-tracker.com/apiserver/v1/suuntoplus/guides/files');
+    expect(init.method).toBe('POST');
+    const headers = init.headers as Record<string, string>;
+    expect(headers['STTAuthorization']).toBe('test-session-key');
+    expect(headers['Client-Id']).toBe('5c2fa984-4425-4e72-8f7c-deeaa454b9c6');
+    expect(headers['Content-Type']).toBe('application/zip');
+    expect(Buffer.from(init.body as Uint8Array)).toEqual(Buffer.from(packed.zip));
+  });
+
+  it('always reports externalId as undefined, since the wire DTO has no such field', async () => {
+    const fetchImpl = vi.fn(async () =>
+      envelope({ id: 'abc', name: 'Easy 40', fileModificationTime: 1, pinned: false }),
+    );
+    const ref = await backendWith(fetchImpl as unknown as typeof fetch).create(pack());
+    expect(ref.externalId).toBeUndefined();
+  });
+
+  it('PUTs to the guideId path for update', async () => {
+    const fetchImpl = vi.fn(async () =>
+      envelope({ id: 'abc', name: 'Easy 40', fileModificationTime: 1, pinned: false }),
+    );
+    await backendWith(fetchImpl as unknown as typeof fetch).update('abc', pack());
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://api.sports-tracker.com/apiserver/v1/suuntoplus/guides/files/abc');
+    expect(init.method).toBe('PUT');
+  });
+
+  it('DELETEs to the guideId path with no body', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await backendWith(fetchImpl as unknown as typeof fetch).remove('abc');
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://api.sports-tracker.com/apiserver/v1/suuntoplus/guides/files/abc');
+    expect(init.method).toBe('DELETE');
+    expect(init.body).toBeUndefined();
+  });
+
+  /**
+   * fetchAll() takes no pagination params on this endpoint — unlike the
+   * documented Cloud API's offset/limit/fileSince, the mobile client fetches
+   * everything and caches locally. This backend mirrors that: one GET with no
+   * query string, then filters client-side, same as FileGuideBackend.
+   */
+  it('fetches the full list with no query parameters, then filters client-side', async () => {
+    const fetchImpl = vi.fn(async () =>
+      envelope([
+        { id: 'a', name: 'A', fileModificationTime: 100, pinned: false },
+        { id: 'b', name: 'B', fileModificationTime: 200, pinned: true },
+      ]),
+    );
+    const guides = await backendWith(fetchImpl as unknown as typeof fetch).list({ since: 150 });
+
+    const [url] = fetchImpl.mock.calls[0] as unknown as [string];
+    expect(url).toBe('https://api.sports-tracker.com/apiserver/v1/suuntoplus/guides/items');
+    expect(guides).toHaveLength(1);
+    expect(guides[0]!.id).toBe('b');
+  });
+
+  it('throws AUTH_EXPIRED with a suuntool-login hint when no session is available', async () => {
+    // No sessionKey override and no real suuntool session file on this machine
+    // (or one pointed at a nonexistent path) — either way, nothing to send.
+    const backend = new PrivateApiGuideBackend({
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+    });
+    const originalEnv = process.env['SUUNTOOL_SESSION_FILE'];
+    process.env['SUUNTOOL_SESSION_FILE'] = '/nonexistent/suuntool-session.json';
+    try {
+      await expect(backend.list()).rejects.toThrow(/no Suunto session/);
+    } finally {
+      if (originalEnv === undefined) delete process.env['SUUNTOOL_SESSION_FILE'];
+      else process.env['SUUNTOOL_SESSION_FILE'] = originalEnv;
+    }
+  });
+
+  it('maps 409 to CONFLICT', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ error: { description: 'Conflict' }, payload: null }), {
+        status: 409,
+      }),
+    );
+    try {
+      await backendWith(fetchImpl as unknown as typeof fetch).create(pack());
+      expect.unreachable('should have thrown');
+    } catch (cause) {
+      expect((cause as SuuntoError).code).toBe('CONFLICT');
+    }
+  });
+
+  it('maps 401 to AUTH_EXPIRED', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 401 }));
+    try {
+      await backendWith(fetchImpl as unknown as typeof fetch).list();
+      expect.unreachable('should have thrown');
+    } catch (cause) {
+      expect((cause as SuuntoError).code).toBe('AUTH_EXPIRED');
+    }
   });
 });

@@ -111,6 +111,18 @@ Two fields the documented Cloud API doesn't mention: `catalogueId` (presumably
 non-null only for guides installed from the SuuntoPlus Store, not
 user-created ones) and `ownerId`, `backgroundUrl`.
 
+**One field conspicuously absent: `externalId`.** The documented Cloud API's
+`RemoteGuideInfo`-equivalent includes it, and it's the whole idempotency
+story there — a 409 on a duplicate `externalId`. This mobile DTO has no such
+field, on create *or* list. That doesn't necessarily mean the server has
+forgotten the value — `guide.json`'s `externalId` may still be parsed and
+enforced server-side even though this particular client never reads it back —
+but it means **this backend cannot verify or rely on that behavior**. Treat
+`create()` as not-provably-idempotent here until a live call proves otherwise
+one way or the other. `downloadJsonFile(id)` would still show a stored
+`externalId`, since it's a byte-for-byte pass-through of what was uploaded —
+just not through the list/create response.
+
 `UpdatePinnedStatusBody`: `{id: string, pinned: boolean}` — sent to the PATCH
 endpoint. Confirms the documented API's note that content updates don't touch
 `pinned` is true here too: it's a genuinely separate call.
