@@ -1,0 +1,20 @@
+# Reverse-engineering artifacts. These must NEVER be committed:
+# APKs are redistributable-restricted, and captures contain session keys,
+# account identifiers and GPS data.
+capture/
+apk/
+*.apk
+*.apkm
+*.xapk
+decompiled/
+
+node_modules/
+dist/
+coverage/
+.DS_Store
+*.log
+
+# Local credentials
+.env
+.env.*
+!.env.example

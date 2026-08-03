@@ -1,0 +1,95 @@
+{
+  "name": "Pyramid interval",
+  "description": "Hard session which impacts an-aerobic threshold pace",
+  "shortDescription": "Hard session",
+  "localDate": "2021-05-28",
+  "type": "sequence",
+  "activities": [3],
+  "usage": "workout",
+  "owner": "CoachingPlatform",
+  "url": "https://www.coachingplatform.com/planwebsitetoreadmore/123456789",
+  "externalId": "123456789",
+  "steps": [
+    {
+      "type": "fields",
+      "trigger": { "type": "stepDuration", "value": 600 },
+      "title": "10 min warmup",
+      "fields": [
+        { "type": "targetHeartRate", "value": 111, "min": 104, "max": 148 },
+        { "type": "heartRate" },
+        { "type": "power" },
+        { "type": "stepDurationCountdown", "value": 600 }
+      ]
+    },
+    {
+      "type": "notification",
+      "createManualLap": true,
+      "fields": [{ "type": "text", "value": "Interval #1 5min @ 90%" }]
+    },
+    {
+      "type": "fields",
+      "trigger": { "type": "stepDuration", "value": 300 },
+      "fields": [
+        { "type": "targetHeartRate", "value": 150, "min": 145, "max": 155 },
+        { "type": "heartRate", "window": "manualLap", "aggregate": "average" },
+        { "type": "power" },
+        { "type": "stepDurationCountdown", "value": 300 }
+      ]
+    },
+    {
+      "type": "notification",
+      "fields": [{ "type": "text", "value": "Interval set 3x1min / 1min" }]
+    },
+    {
+      "type": "repeat",
+      "times": 3,
+      "steps": [
+        {
+          "type": "fields",
+          "createManualLap": true,
+          "trigger": { "type": "stepDuration", "value": 60 },
+          "title": "1 min int",
+          "fields": [
+            { "type": "targetHeartRate", "value": 180, "min": 170, "max": 185 },
+            { "type": "heartRate" },
+            { "type": "power" },
+            { "type": "stepDurationCountdown", "value": 60 }
+          ]
+        },
+        {
+          "type": "notification",
+          "createManualLap": true,
+          "fields": [{ "type": "text", "value": "Rest" }]
+        },
+        {
+          "type": "fields",
+          "trigger": { "type": "stepDuration", "value": 60 },
+          "title": "1 min rest",
+          "fields": [
+            { "type": "targetHeartRate", "value": 140, "min": 130, "max": 145 },
+            { "type": "heartRate" },
+            { "type": "power" },
+            { "type": "cadence" },
+            { "type": "stepDurationCountdown", "value": 60 }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "fields",
+      "createManualLap": true,
+      "trigger": { "type": "stepDuration", "value": 600 },
+      "title": "Cooldown",
+      "fields": [
+        { "type": "targetHeartRate", "value": 140, "min": 130, "max": 145 },
+        { "type": "heartRate", "window": "manualLap", "aggregate": "average" },
+        { "type": "power" },
+        { "type": "stepDurationCountdown", "value": 600 }
+      ]
+    },
+    {
+      "type": "fields",
+      "title": "Good Job"
+    }
+  ]
+}
