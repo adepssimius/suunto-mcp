@@ -9,6 +9,7 @@ import { CloudApiGuideBackend, StaticTokenProvider } from '../backends/cloud-api
 import { FileGuideBackend } from '../backends/file.js';
 import type { GuideBackend } from '../backends/port.js';
 import type { AthleteProfile } from '../domain/workout.js';
+import { SuuntoolCli } from '../training/suuntool-cli.js';
 import { buildServer } from './server.js';
 
 /**
@@ -33,6 +34,8 @@ const EnvSchema = z.object({
   SUUNTO_ACCESS_TOKEN: optional(z.string()),
   SUUNTO_CLIENT_ID: optional(z.string()),
   SUUNTO_CLIENT_SECRET: optional(z.string()),
+  SUUNTO_TRAINING_CONTEXT: z.enum(['suuntool', 'off']).default('off'),
+  SUUNTOOL_BINARY: optional(z.string()),
   SUUNTO_MAX_HR: optional(z.coerce.number().int().positive().max(260)),
   SUUNTO_REST_HR: optional(z.coerce.number().int().positive().max(150)),
   SUUNTO_THRESHOLD_HR: optional(z.coerce.number().int().positive().max(260)),
@@ -103,12 +106,17 @@ async function main(): Promise<void> {
 
   const backend = buildBackend(env);
   const profile = buildProfile(env);
+  const trainingContext =
+    env.SUUNTO_TRAINING_CONTEXT === 'suuntool'
+      ? new SuuntoolCli({ ...(env.SUUNTOOL_BINARY ? { binary: env.SUUNTOOL_BINARY } : {}) })
+      : undefined;
 
   const server = buildServer({
     backend,
     owner: env.SUUNTO_OWNER ?? 'suunto-mcp',
     url: env.SUUNTO_URL ?? 'https://github.com/local/suunto-mcp',
     ...(profile ? { profile } : {}),
+    ...(trainingContext ? { trainingContext } : {}),
     allowWrite: argv.has('--allow-write'),
     allowDestructive: argv.has('--allow-destructive'),
   });

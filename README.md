@@ -18,9 +18,19 @@ and they differ enough that the transport has to be a replaceable part:
 | Local zip | Works today | Emit a validated `guide.zip`; no auth involved. |
 
 `suuntool` deliberately isn't one of them: it has no guide-creation capability at
-all. It's a good *read* client for completed activity and wellness data, and it
-ships its own MCP server, so it's best composed alongside this one rather than
-wrapped by it.
+all. It's a good *read* client for completed activity and wellness data, so with
+`SUUNTO_TRAINING_CONTEXT=suuntool` this server shells out to it (argv array,
+never a shell string) for one extra tool, `get_recent_training` — recent
+workouts and recovery, unit-converted (recovery HR arrives in **Hz**, not BPM;
+quality as a **0..1 fraction**, not a percentage — both silent enough to pass an
+inattentive review unconverted). It otherwise ships its own MCP server, so for
+anything beyond that, run the two side by side rather than wrapping one in the
+other.
+
+Its exit codes double as this server's own error taxonomy: codes 2–7
+(`USAGE`/`NETWORK`/`AUTH_EXPIRED`/`SERVER`/`NOT_FOUND`/`FORBIDDEN`) are
+numerically identical on both, so a session that has expired in suuntool's own
+`session.json` surfaces through the same code as an expired Cloud API token.
 
 ## The interesting part
 
@@ -83,6 +93,8 @@ warnings — start there.
 | `SUUNTO_ACCESS_TOKEN` | Static bearer token, for trying the API by hand |
 | `SUUNTO_CLIENT_ID` / `SUUNTO_CLIENT_SECRET` | Enables refresh of the 24h token |
 | `SUUNTO_MAX_HR`, `SUUNTO_THRESHOLD_HR`, `SUUNTO_FTP`, `SUUNTO_REST_HR` | Athlete profile, needed only for `%HRmax` / `%FTP` targets |
+| `SUUNTO_TRAINING_CONTEXT` | `suuntool` to enable `get_recent_training`, `off` (default) |
+| `SUUNTOOL_BINARY` | Path to `suuntool`, if not on `PATH` |
 
 Configuration is validated at startup and a bad config is a hard exit — an MCP
 server that starts and then fails every call is much harder to diagnose.

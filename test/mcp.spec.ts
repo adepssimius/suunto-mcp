@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { FileGuideBackend } from '../src/backends/file.js';
 import type { GuideBackend } from '../src/backends/port.js';
 import { buildServer, type ServerOptions } from '../src/mcp/server.js';
+import { SuuntoolCli, type ExecFn } from '../src/training/suuntool-cli.js';
 
 /**
  * End-to-end through a real MCP client over an in-memory transport, rather than
@@ -272,5 +273,103 @@ describe('capability reporting', () => {
     });
     expect(scheduled.isError).toBe(true);
     expect(scheduled.payload.error.code).toBe('UNSUPPORTED');
+  });
+});
+
+describe('get_recent_training', () => {
+  function fakeExec(stdoutFor: Record<string, string>): ExecFn {
+    return async (_command, args) => {
+      const key = args[0] === 'wellness' ? 'recovery' : args.join(' ').startsWith('whoami') ? 'whoami' : 'workouts';
+      return { stdout: stdoutFor[key] ?? '', stderr: '' };
+    };
+  }
+
+  const stdout = {
+    whoami: JSON.stringify({ username: 'alice', userKey: 'k1', emailVerified: true }),
+    workouts: JSON.stringify({
+      items: [
+        {
+          key: 'w1',
+          activityId: 1,
+          startTime: Date.UTC(2026, 6, 1),
+          totalTime: 1800,
+          totalDistance: 6000,
+          totalAscent: 0,
+          totalDescent: 0,
+          hrdata: { avg: 145 },
+        },
+      ],
+      until: 0,
+    }),
+    recovery: [JSON.stringify({ timestamp: Date.UTC(2026, 6, 1), hrMin: 0.9, quality: 0.8 })].join('\n'),
+  };
+
+  /**
+   * Not registered by default — it depends on an external binary and a login
+   * this server plays no part in, so it must be opt-in rather than assumed.
+   */
+  it('is absent unless a training context is configured', async () => {
+    const { client } = await connect();
+    expect((await client.listTools()).tools.map((t) => t.name)).not.toContain(
+      'get_recent_training',
+    );
+  });
+
+  it('combines workouts and recovery into converted, unit-safe summaries', async () => {
+    const trainingContext = new SuuntoolCli({ exec: fakeExec(stdout) });
+    const { client } = await connect({ trainingContext });
+
+    const payload = await callOk(client, 'get_recent_training', { days: 14 });
+
+    expect(payload.athlete).toBe('alice');
+    expect(payload.workouts).toEqual([
+      {
+        key: 'w1',
+        activity: 'RUNNING',
+        date: '2026-07-01',
+        distanceKm: 6,
+        durationMin: 30,
+        avgHrBpm: 145,
+      },
+    ]);
+    // hrMin of 0.9 Hz, not 0.9 bpm — a resting heart rate of 54 is the correct
+    // reading, and the raw 0.9 would have been a silent, plausible-looking bug.
+    expect(payload.recovery).toEqual([
+      { date: '2026-07-01', restingHrBpm: 54, recoveryQualityPercent: 80 },
+    ]);
+  });
+
+  it('tolerates a FORBIDDEN recovery scope and still returns workout history', async () => {
+    const trainingContext = new SuuntoolCli({
+      exec: async (_command, args) => {
+        if (args[0] === 'wellness') {
+          const error = new Error('forbidden') as Error & { code?: number };
+          error.code = 7;
+          throw error;
+        }
+        return fakeExec(stdout)(_command, args, { timeout: 0, maxBuffer: 0 });
+      },
+    });
+    const { client } = await connect({ trainingContext });
+    const payload = await callOk(client, 'get_recent_training', {});
+    expect(payload.workouts).toHaveLength(1);
+    expect(payload.recovery).toEqual([]);
+  });
+
+  it('propagates a non-FORBIDDEN recovery failure rather than swallowing it', async () => {
+    const trainingContext = new SuuntoolCli({
+      exec: async (_command, args) => {
+        if (args[0] === 'wellness') {
+          const error = new Error('down') as Error & { code?: number };
+          error.code = 5;
+          throw error;
+        }
+        return fakeExec(stdout)(_command, args, { timeout: 0, maxBuffer: 0 });
+      },
+    });
+    const { client } = await connect({ trainingContext });
+    const { isError, payload } = await callJson(client, 'get_recent_training', {});
+    expect(isError).toBe(true);
+    expect(payload.error.code).toBe('SERVER');
   });
 });

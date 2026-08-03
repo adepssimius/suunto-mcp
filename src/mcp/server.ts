@@ -8,6 +8,8 @@ import { ACTIVITY_IDS } from '../domain/activities.js';
 import type { AthleteProfile } from '../domain/workout.js';
 import { isSuuntoError, SuuntoError } from '../errors.js';
 import { packGuide } from '../package/zip.js';
+import { summariseRecovery, summariseWorkout } from '../training/digest.js';
+import type { SuuntoolCli } from '../training/suuntool-cli.js';
 import { AthleteProfileArg, workoutShape } from './schema.js';
 
 /**
@@ -30,11 +32,19 @@ export interface ServerOptions {
   allowWrite?: boolean;
   allowDestructive?: boolean;
   transport?: Transport;
+  /**
+   * Optional read-only training context, backed by the `suuntool` CLI. Absent
+   * by default: it depends on an external binary and an existing login this
+   * server has no part in, so its tool is only registered when explicitly wired
+   * up rather than assumed present.
+   */
+  trainingContext?: SuuntoolCli;
 }
 
 interface Deps {
   backend: GuideBackend;
   compileOptions: CompileOptions;
+  trainingContext?: SuuntoolCli;
 }
 
 export function buildServer(options: ServerOptions): McpServer {
@@ -47,6 +57,7 @@ export function buildServer(options: ServerOptions): McpServer {
       url: options.url,
       ...(options.profile ? { profile: options.profile } : {}),
     },
+    ...(options.trainingContext ? { trainingContext: options.trainingContext } : {}),
   };
 
   registerReadTools(server, deps);
@@ -158,6 +169,10 @@ function registerReadTools(server: McpServer, deps: Deps): void {
       }),
   );
 
+  if (deps.trainingContext) {
+    registerTrainingContextTool(server, deps.trainingContext);
+  }
+
   server.registerTool(
     'describe_backend',
     {
@@ -176,6 +191,52 @@ function registerReadTools(server: McpServer, deps: Deps): void {
         profile: deps.compileOptions.profile ?? null,
         activityTypes: Object.keys(ACTIVITY_IDS),
       })),
+  );
+}
+
+/**
+ * `get_recent_training` is registered separately from `registerReadTools`
+ * rather than folded into it, because it depends on an optional collaborator
+ * (`suuntool`, an external binary reading an external login) instead of the
+ * server's own always-present backend. Keeping it a distinct function makes
+ * that conditionality visible at the call site rather than buried in a branch.
+ */
+function registerTrainingContextTool(server: McpServer, cli: SuuntoolCli): void {
+  server.registerTool(
+    'get_recent_training',
+    {
+      title: 'Get recent training and recovery',
+      description:
+        'Fetch recently completed workouts and recovery readings via suuntool, so a new session ' +
+        'can be prescribed with knowledge of recent load and recovery. Read-only: this reflects ' +
+        "what already happened, never what's planned.",
+      inputSchema: {
+        days: z.number().int().min(1).max(90).default(14).describe('How far back to look'),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ days }) =>
+      guard(async () => {
+        const since = `${days}d`;
+        const [athlete, workouts, recovery] = await Promise.all([
+          cli.whoami(),
+          cli.recentWorkouts({ since }),
+          cli.recovery({ since }).catch((cause) => {
+            // Recovery data is a bonus, not a precondition — a missing wellness
+            // scope or an unsupported device should not fail the whole tool
+            // when workout history alone still answers the question asked.
+            if (isSuuntoError(cause) && cause.code === 'FORBIDDEN') return [];
+            throw cause;
+          }),
+        ]);
+
+        return {
+          athlete: athlete.username,
+          windowDays: days,
+          workouts: workouts.items.map(summariseWorkout),
+          recovery: recovery.map(summariseRecovery),
+        };
+      }),
   );
 }
 
