@@ -1,6 +1,15 @@
 # Private guides API — confirmed
 
-**Status: fully mapped**, by static analysis of `com.stt.android.suunto` v6.11.8
+**Status: fully mapped AND live-verified.** `GET suuntoplus/guides/items` was
+called for real, read-only, against a live account (2026-08-03) via
+`SUUNTO_MCP_BACKEND=private list_workouts`, using a session from
+`suuntool login`. It returned 10 real guides — correctly decoded `id`, `name`,
+`localDate`, `pinned`, `modificationTime` — including one named "Runna
+Repeats", confirming the Runna-sourced guides mentioned below are real and
+present on this account. No write call has been made; see "Remaining
+unknowns" below for what that would still confirm.
+
+Mapped by static analysis of `com.stt.android.suunto` v6.11.8
 (pulled from a real device via `scripts/pull-apk.sh`, decompiled via
 `scripts/analyze-apk.sh 2`). No traffic capture was needed — R8 left the
 Retrofit interface and its DTOs with real names, and the annotation *values*
@@ -148,17 +157,26 @@ repo:
   backend has that the others don't model yet (`suuntoplus/guides/items/{id}`
   PATCH) — worth a `pin` capability flag if it's ever exposed as a tool.
 
-## Remaining unknowns (low-stakes, resolvable with one real call)
+## Remaining unknowns
 
-- [ ] Exact base URL prefix (`api.sports-tracker.com/apiserver/v1/` is
-      inferred from suuntool's own base URL and the ASKO envelope match, not
-      proven by finding the literal concatenation in code — the Retrofit
-      client's `@BaseUrl`/builder wiring wasn't tracked down). First real
-      request will confirm or correct this immediately.
-- [ ] Whether `Client-Id` is enforced or just logged.
+- [x] ~~Exact base URL prefix~~ — **confirmed**: `suuntool doctor` reports
+      `https://api.sports-tracker.com/apiserver/v1/` as its own `baseURL`, and
+      `PrivateApiGuideBackend` using that exact value against
+      `suuntoplus/guides/items` returned a correctly-decoded real guide list.
+      No literal-concatenation proof was needed after all — the live call
+      settled it directly.
+- [x] ~~Whether `STTAuthorization` from a `suuntool` session is accepted here~~
+      — **confirmed live**, no separate login or credential needed.
+- [ ] Whether `Client-Id` is enforced or just logged (list works with it sent;
+      haven't tried omitting it).
+- [ ] Whether `externalId` survives a real create/update round-trip in
+      `guide.json` even though it's absent from `RemoteGuideInfo` — needs a
+      write, not attempted yet.
 - [ ] Whether the account needs to be the *creator* of a guide to update/delete
       it (mirrors the documented API's "belongs to someone else" 404), and
-      what happens to guides created by a *different* client (Client-Id).
+      what happens to guides created by a *different* client (Client-Id) — e.g.
+      the "Runna Repeats" guide seen in the live list, created by Runna's
+      Client-Id, not ours.
 
 ## Ground rules (unchanged)
 
