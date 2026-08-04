@@ -14,18 +14,20 @@ and they differ enough that the transport has to be a replaceable part:
 | Path | Status | Notes |
 |---|---|---|
 | Cloud API (`cloudapi.suunto.com/v2/guides`) | Documented, needs a subscription key | The sanctioned path. Contract fully captured in [docs/cloud-api.md](docs/cloud-api.md). |
-| Private mobile API (`suuntoplus/guides/*`) | Fully mapped, unsanctioned | Confirmed by static analysis of the Suunto Android app — not traffic capture. Full write-up in [docs/private-guides-api.md](docs/private-guides-api.md). Genuinely undocumented; needs no new credential (reuses a `suuntool` session), but is unconfirmed against a live account. |
+| Private mobile API (`suuntoplus/guides/*`) | Fully mapped **and live-verified**, reads and writes, unsanctioned | Confirmed by static analysis of the Suunto Android app, then exercised for real: create → duplicate-externalId 409 → update → delete, all against a live account. Full write-up in [docs/private-guides-api.md](docs/private-guides-api.md). Genuinely undocumented; needs no new credential — reuses a `suuntool` session. |
 | Local zip | Works today | Emit a validated `guide.zip`; no auth involved. |
 
-`suuntool` deliberately isn't one of them: it has no guide-creation capability at
-all. It's a good *read* client for completed activity and wellness data, so with
-`SUUNTO_TRAINING_CONTEXT=suuntool` this server shells out to it (argv array,
-never a shell string) for one extra tool, `get_recent_training` — recent
-workouts and recovery, unit-converted (recovery HR arrives in **Hz**, not BPM;
-quality as a **0..1 fraction**, not a percentage — both silent enough to pass an
-inattentive review unconverted). It otherwise ships its own MCP server, so for
-anything beyond that, run the two side by side rather than wrapping one in the
-other.
+`suuntool` deliberately isn't one of these paths: it has no guide-creation
+capability at all. What it *does* have is a good, read-only MCP server of its
+own — `suuntool mcp` — for completed activity and wellness data, comments,
+reactions, and profile info. This server doesn't wrap or re-expose any of
+that: run the two side by side as **separate MCP configs**
+(`claude mcp add suunto-mcp -- ...` and `claude mcp add suuntool -- suuntool mcp`)
+rather than have this one duplicate a surface suuntool already covers better.
+The private backend's use of `suuntool`'s session file (below) is credential
+reuse, not functionality overlap — it's the reason suuntool is a prerequisite
+for the `private` backend either way, so adding its own MCP server alongside
+this one costs nothing extra.
 
 Its exit codes double as this server's own error taxonomy: codes 2–7
 (`USAGE`/`NETWORK`/`AUTH_EXPIRED`/`SERVER`/`NOT_FOUND`/`FORBIDDEN`) are
@@ -75,7 +77,7 @@ update, `--allow-destructive` on top of that to delete. Gating happens at
 entirely rather than present and always refusing.
 
 ```bash
-claude mcp add suunto -- node /path/to/suunto-mcp/dist/mcp/main.js --allow-write
+claude mcp add --scope user suunto-mcp -e SUUNTO_MCP_BACKEND=private -- node /path/to/suunto-mcp/dist/mcp/main.js --allow-write
 ```
 
 | Tier | Tools |
@@ -86,6 +88,13 @@ claude mcp add suunto -- node /path/to/suunto-mcp/dist/mcp/main.js --allow-write
 
 `preview_workout` compiles and validates without uploading, and returns the
 warnings — start there.
+
+For completed-activity and recovery data, add `suuntool`'s own MCP server as a
+**separate** config rather than expecting this one to cover it:
+
+```bash
+claude mcp add --scope user suuntool -- suuntool mcp
+```
 
 ### Configuration
 
@@ -98,8 +107,6 @@ warnings — start there.
 | `SUUNTO_ACCESS_TOKEN` | Static bearer token, for trying the API by hand |
 | `SUUNTO_CLIENT_ID` / `SUUNTO_CLIENT_SECRET` | Enables refresh of the 24h token |
 | `SUUNTO_MAX_HR`, `SUUNTO_THRESHOLD_HR`, `SUUNTO_FTP`, `SUUNTO_REST_HR` | Athlete profile, needed only for `%HRmax` / `%FTP` targets |
-| `SUUNTO_TRAINING_CONTEXT` | `suuntool` to enable `get_recent_training`, `off` (default) |
-| `SUUNTOOL_BINARY` | Path to `suuntool`, if not on `PATH` |
 
 Configuration is validated at startup and a bad config is a hard exit — an MCP
 server that starts and then fails every call is much harder to diagnose.
