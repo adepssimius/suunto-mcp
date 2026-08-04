@@ -130,8 +130,23 @@ export const SimpleStepSchema = z.object({
   title: z.string().optional(),
   /** Shown as a notification popup before the step begins. */
   note: z.string().optional(),
-  /** Force a lap mark at the start of this step. */
+  /**
+   * Force a lap mark on the notification introducing this step (if `note` is
+   * set). Independent of whether the step itself can be skipped early — see
+   * `allowSkip`, which governs that.
+   */
   lapOnStart: z.boolean().optional(),
+  /**
+   * Whether pressing the watch's lap button ends this step early, before its
+   * duration/distance target is reached. Treated as true when omitted (see
+   * `compile.ts`'s `step.allowSkip !== false`, not a zod default — that would
+   * make the field required on every hand-authored step object, for no
+   * benefit): a real, live-verified guide (from Runna, a Suunto partner)
+   * always grants this, so locking a step is the surprising choice a coach
+   * opts into, not the default an athlete should be denied by omission. Has
+   * no effect on a `duration.kind === 'lap'` step, which is already lap-only.
+   */
+  allowSkip: z.boolean().optional(),
 });
 export type SimpleStep = z.infer<typeof SimpleStepSchema>;
 

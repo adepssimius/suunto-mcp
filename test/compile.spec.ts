@@ -3,8 +3,13 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { compile } from '../src/compile/compile.js';
 import { validateGuide } from '../src/domain/guide-schema.js';
-import type { Guide, GuideFieldsStep, GuideRepeatStep } from '../src/domain/guide.js';
+import type { Guide, GuideFieldsStep, GuideRepeatStep, GuideTrigger } from '../src/domain/guide.js';
 import type { Workout } from '../src/domain/workout.js';
+
+/** Extract `value` from a flat trigger. `undefined` for manualLap/or/and/absent. */
+function flatTriggerValue(trigger: GuideTrigger | undefined): number | undefined {
+  return trigger && 'value' in trigger ? trigger.value : undefined;
+}
 
 const fixture = JSON.parse(
   readFileSync(fileURLToPath(new URL('./fixtures/pyramid-interval.guide.json', import.meta.url)), 'utf8'),
@@ -68,12 +73,18 @@ const pyramidWorkout: Workout = {
   date: '2021-05-28',
   externalId: '123456789',
   finalMessage: 'Good Job',
+  // allowSkip: false throughout — this fixture's job is byte-for-byte
+  // reproduction of Suunto's own official PDF sample, which predates the
+  // OR+manualLap convention and uses flat triggers exclusively. It is not a
+  // statement that skip-disabled should be the compiler's default; see
+  // lowering.spec.ts for that (allowSkip omitted, i.e. the real default).
   steps: [
     {
       type: 'step',
       role: 'warmup',
       duration: { kind: 'time', seconds: 600 },
       intensity: { kind: 'hr', basis: 'bpm', min: 104, max: 148 },
+      allowSkip: false,
     },
     {
       type: 'step',
@@ -83,6 +94,7 @@ const pyramidWorkout: Workout = {
       note: 'Interval #1 5min @ 90%',
       lapOnStart: true,
       title: '5 min int',
+      allowSkip: false,
     },
     {
       type: 'repeat',
@@ -95,6 +107,7 @@ const pyramidWorkout: Workout = {
           duration: { kind: 'time', seconds: 60 },
           intensity: { kind: 'hr', basis: 'bpm', min: 170, max: 185 },
           lapOnStart: true,
+          allowSkip: false,
         },
         {
           type: 'step',
@@ -103,6 +116,7 @@ const pyramidWorkout: Workout = {
           intensity: { kind: 'hr', basis: 'bpm', min: 130, max: 145 },
           note: 'Rest',
           lapOnStart: true,
+          allowSkip: false,
         },
       ],
     },
@@ -112,6 +126,7 @@ const pyramidWorkout: Workout = {
       duration: { kind: 'time', seconds: 600 },
       intensity: { kind: 'hr', basis: 'bpm', min: 130, max: 145 },
       lapOnStart: true,
+      allowSkip: false,
     },
   ],
 };
@@ -154,7 +169,7 @@ describe('compiling the equivalent domain workout', () => {
   it('reproduces the sample triggers', () => {
     const triggers = guide.steps
       .filter((s): s is GuideFieldsStep => s.type === 'fields')
-      .map((s) => s.trigger?.value);
+      .map((s) => flatTriggerValue(s.trigger));
     expect(triggers).toEqual([600, 300, 600, undefined]);
   });
 
@@ -207,7 +222,7 @@ describe('compiling the equivalent domain workout', () => {
     for (const step of guide.steps) {
       if (step.type !== 'fields' || !step.trigger) continue;
       const countdown = (step.fields ?? []).find((f) => f.type === 'stepDurationCountdown');
-      expect(countdown?.value).toBe(step.trigger.value);
+      expect(countdown?.value).toBe(flatTriggerValue(step.trigger));
     }
   });
 

@@ -1,10 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import { compile, CompileError } from '../src/compile/compile.js';
 import { validateGuide } from '../src/domain/guide-schema.js';
-import type { GuideFieldsStep, GuideRepeatStep } from '../src/domain/guide.js';
+import type { GuideFieldsStep, GuideRepeatStep, GuideTrigger } from '../src/domain/guide.js';
 import type { Step, Workout } from '../src/domain/workout.js';
 
 const OPTIONS = { owner: 'suunto-mcp', url: 'https://example.com/plan' };
+
+/**
+ * The leaf duration/distance value inside a trigger, however deeply it's
+ * wrapped by `allowSkip`'s OR+manualLap compounding. Used where a test cares
+ * about the underlying duration surviving repeat-unrolling etc., not about
+ * whether skip is enabled — that's covered separately, explicitly.
+ */
+function leafTriggerValue(trigger: GuideTrigger | undefined): number | undefined {
+  if (!trigger) return undefined;
+  if ('value' in trigger) return trigger.value;
+  if (trigger.type === 'or' || trigger.type === 'and') {
+    for (const inner of trigger.triggers) {
+      const value = leafTriggerValue(inner);
+      if (value !== undefined) return value;
+    }
+  }
+  return undefined;
+}
 
 function workout(steps: Step[], extra: Partial<Workout> = {}): Workout {
   return {
@@ -45,7 +63,9 @@ describe('repeat flattening', () => {
     expect(repeat.times).toBe(3);
     // 2 unrolled work steps + 1 rest step
     expect(repeat.steps).toHaveLength(3);
-    expect(repeat.steps.map((s) => (s as GuideFieldsStep).trigger?.value)).toEqual([60, 60, 90]);
+    expect(repeat.steps.map((s) => leafTriggerValue((s as GuideFieldsStep).trigger))).toEqual([
+      60, 60, 90,
+    ]);
   });
 
   it('unrolls repeats nested three deep', () => {
@@ -257,7 +277,17 @@ describe('targets end to end', () => {
 });
 
 describe('durations and triggers', () => {
-  it('maps each duration kind to the right trigger and countdown', () => {
+  /**
+   * allowSkip omitted — the default. A user compared this compiler's output
+   * against a real, working Runna guide and found lap-skip didn't work on a
+   * generated workout; the cause was that every trigger here used to be flat,
+   * with no manualLap alternative at all. This is the regression test for
+   * that: every duration/distance trigger must be a compound
+   * {type:'or', triggers:[base, manualLap]}, exactly the shape confirmed live
+   * in Runna's own guide.json, and the fields step must carry
+   * createManualLap:true or the OR+manualLap trigger is inert.
+   */
+  it('grants lap-skip by default: duration/distance triggers gain a manualLap alternative', () => {
     const { guide } = compile(
       workout([
         { type: 'step', role: 'work', duration: min(300) },
@@ -268,15 +298,45 @@ describe('durations and triggers', () => {
     );
 
     const steps = guide.steps as GuideFieldsStep[];
-    expect(steps[0]!.trigger).toEqual({ type: 'stepDuration', value: 300 });
+    expect(steps[0]!.trigger).toEqual({
+      type: 'or',
+      triggers: [{ type: 'stepDuration', value: 300 }, { type: 'manualLap' }],
+    });
+    expect(steps[0]!.createManualLap).toBe(true);
     expect(steps[0]!.fields!.some((f) => f.type === 'stepDurationCountdown')).toBe(true);
 
-    expect(steps[1]!.trigger).toEqual({ type: 'stepDistance', value: 800 });
+    expect(steps[1]!.trigger).toEqual({
+      type: 'or',
+      triggers: [{ type: 'stepDistance', value: 800 }, { type: 'manualLap' }],
+    });
+    expect(steps[1]!.createManualLap).toBe(true);
     expect(steps[1]!.fields!.some((f) => f.type === 'stepDistanceCountdown')).toBe(true);
 
-    // An open step ends on the lap button and has nothing to count down.
+    // Already lap-only — no OR wrapping needed, but still gets the flag.
     expect(steps[2]!.trigger).toEqual({ type: 'manualLap' });
+    expect(steps[2]!.createManualLap).toBe(true);
     expect(steps[2]!.fields!.some((f) => f.type.endsWith('Countdown'))).toBe(false);
+  });
+
+  it('allowSkip: false locks a step to a flat trigger with no escape hatch', () => {
+    const { guide } = compile(
+      workout([
+        { type: 'step', role: 'work', duration: min(300), allowSkip: false },
+        {
+          type: 'step',
+          role: 'work',
+          duration: { kind: 'distance', meters: 800 },
+          allowSkip: false,
+        },
+      ]),
+      OPTIONS,
+    );
+
+    const steps = guide.steps as GuideFieldsStep[];
+    expect(steps[0]!.trigger).toEqual({ type: 'stepDuration', value: 300 });
+    expect(steps[0]!.createManualLap).toBeUndefined();
+    expect(steps[1]!.trigger).toEqual({ type: 'stepDistance', value: 800 });
+    expect(steps[1]!.createManualLap).toBeUndefined();
   });
 
   it('labels durations the way a coach reads them', () => {

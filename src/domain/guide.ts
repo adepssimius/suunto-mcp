@@ -3,23 +3,25 @@
  *
  * Modelled on the authoritative "Pyramid interval" sample in Suunto's
  * `SuuntoplusGuideCloudAPI.pdf`, cross-checked against the field/limit reference
- * at apizone.suunto.com/suuntoplus-guide-description.
+ * at apizone.suunto.com/suuntoplus-guide-description, and against a real guide
+ * pulled live off a Runna-managed account (`suuntoplus/guides/files/{id}`,
+ * confirmed working — the athlete can press lap to skip any of its steps).
  *
- * One discrepancy between those two sources is worth knowing about: the field
- * reference documents a richer `transitions: [{condition, stepId}]` mechanism
- * (supporting `or`/`and`, `location`, `routeCompleted`), while the Cloud API
- * sample uses a flat per-step `trigger`. We emit `trigger`, because that is the
- * form in the document that also shows a 201 response. `transitions` is left for
- * later if we ever need conditional branching.
+ * The field reference documents a richer `transitions: [{condition, stepId}]`
+ * mechanism (`or`/`and`, `location`, `routeCompleted`), and the PDF sample uses
+ * only a flat `trigger`. Both are real, but there's a third, simpler form in
+ * between that neither document shows: a **compound `trigger`** —
+ * `{type: 'or', triggers: [...]}` — which is what Runna's guide actually uses to
+ * let a duration/distance step also end early on `manualLap`. That's the form
+ * modelled below; the full `transitions`/`stepId` branching system is still
+ * unimplemented, and unneeded until conditional branching is actually required.
  */
 
-export type GuideTriggerType = 'stepDuration' | 'stepDistance' | 'manualLap';
-
-export interface GuideTrigger {
-  type: GuideTriggerType;
-  /** Seconds for `stepDuration`, metres for `stepDistance`. Absent for `manualLap`. */
-  value?: number;
-}
+export type GuideTrigger =
+  | { type: 'stepDuration'; value: number }
+  | { type: 'stepDistance'; value: number }
+  | { type: 'manualLap' }
+  | { type: 'or' | 'and'; triggers: GuideTrigger[] };
 
 /** Scope for a measurement field. */
 export type GuideWindow = 'workout' | 'step' | 'manualLap';

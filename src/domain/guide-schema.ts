@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { GuideTrigger } from './guide.js';
 import { LIMITS } from './limits.js';
 
 /**
@@ -75,14 +76,23 @@ const GuideFieldSchema = z
     message: 'field min must be <= max',
   });
 
-const GuideTriggerSchema = z
-  .object({
-    type: z.enum(['stepDuration', 'stepDistance', 'manualLap']),
-    value: z.number().positive().optional(),
-  })
-  .refine((t) => t.type === 'manualLap' || t.value !== undefined, {
-    message: 'stepDuration and stepDistance triggers require a value',
-  });
+/**
+ * Recursive: a compound trigger's `triggers` array holds more triggers,
+ * including further compounds. Confirmed live in a real Runna guide as the
+ * mechanism that lets an athlete press lap to skip a duration/distance step
+ * early — see the comment on `GuideTrigger` in `guide.ts`.
+ */
+const GuideTriggerSchema: z.ZodType<GuideTrigger> = z.lazy(() =>
+  z.discriminatedUnion('type', [
+    z.object({ type: z.literal('stepDuration'), value: z.number().positive() }),
+    z.object({ type: z.literal('stepDistance'), value: z.number().positive() }),
+    z.object({ type: z.literal('manualLap') }),
+    z.object({
+      type: z.enum(['or', 'and']),
+      triggers: z.array(GuideTriggerSchema).min(1),
+    }),
+  ]),
+);
 
 const GuideFieldsStepSchema = z.object({
   type: z.literal('fields'),

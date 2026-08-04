@@ -40,6 +40,11 @@ model is what a coach would write, and `src/compile` lowers it:
 
 - roles (`warmup`/`work`/`rest`/…) → titles, notifications and lap marks
 - durations → a per-step `trigger` plus a matching countdown *field*
+- **every duration/distance trigger grants lap-skip by default** — a compound
+  `{type:"or", triggers:[base, {type:"manualLap"}]}` plus `createManualLap:true`,
+  confirmed live against a real Runna guide after a user reported this
+  compiler's own workouts couldn't be skipped early. Opt a step out with
+  `allowSkip: false` to lock it instead.
 - **pace ranges → m/s, with the bounds inverted** (4:15–4:25 /km is 3.77–3.92 m/s)
 - cadence → **Hertz** (180 spm is 3.0)
 - `%HRmax` / `%FTP` → absolutes, resolved from the athlete profile

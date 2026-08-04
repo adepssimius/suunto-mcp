@@ -259,15 +259,25 @@ function lowerStep(
 
   const fieldsStep: GuideFieldsStep = { type: 'fields' };
 
-  const trigger = triggerFor(step.duration);
+  const trigger = triggerFor(step.duration, step.allowSkip !== false);
   if (trigger) fieldsStep.trigger = trigger;
 
   const title = fit(step.title ?? generateTitle(step), LIMITS.stepTitle);
   if (title) fieldsStep.title = title;
 
-  // The lap mark belongs on whichever step comes first, so it lands at the
-  // actual boundary rather than one screen late.
-  if (step.lapOnStart && !step.note) fieldsStep.createManualLap = true;
+  // Two independent reasons a fields step gets a manual lap mark:
+  //  (a) lapOnStart — an explicit request to log one at this step's start,
+  //      regardless of the trigger. Exactly how Suunto's own official PDF
+  //      sample uses it: createManualLap:true on a step with an ordinary flat
+  //      stepDuration trigger, no OR/manualLap in sight.
+  //  (b) the trigger itself can be satisfied by a manual lap press (allowSkip).
+  //      Confirmed live, paired 1:1, in a real Runna guide — without this the
+  //      OR+manualLap trigger is present but pressing lap does nothing.
+  // The two are independent, not one subsuming the other — case (a) is what
+  // the official sample uses on a step with no skip capability at all.
+  if ((step.lapOnStart && !step.note) || triggerAllowsManualLap(trigger)) {
+    fieldsStep.createManualLap = true;
+  }
 
   const fields = buildFields(step, ctx);
   if (fields.length > 0) fieldsStep.fields = fields;
@@ -276,15 +286,37 @@ function lowerStep(
   return out;
 }
 
-function triggerFor(duration: Duration): GuideTrigger | undefined {
+function triggerFor(duration: Duration, allowSkip: boolean): GuideTrigger | undefined {
   switch (duration.kind) {
     case 'time':
-      return { type: 'stepDuration', value: duration.seconds };
+      return withSkip({ type: 'stepDuration', value: duration.seconds }, allowSkip);
     case 'distance':
-      return { type: 'stepDistance', value: duration.meters };
+      return withSkip({ type: 'stepDistance', value: duration.meters }, allowSkip);
     case 'lap':
       return { type: 'manualLap' };
   }
+}
+
+/**
+ * Wrap a duration/distance trigger so a manual lap press also ends the step
+ * early, matching the compound `{type:'or', triggers:[...]}` form confirmed
+ * live in a real Runna guide. A flat trigger isn't wrong — it's exactly what
+ * Suunto's own official PDF sample uses — it just means the athlete can never
+ * skip ahead, which turned out to be the surprising choice, not the expected
+ * one, when a user compared this compiler's output against a working guide.
+ */
+function withSkip(base: GuideTrigger, allowSkip: boolean): GuideTrigger {
+  if (!allowSkip) return base;
+  return { type: 'or', triggers: [base, { type: 'manualLap' }] };
+}
+
+function triggerAllowsManualLap(trigger: GuideTrigger | undefined): boolean {
+  if (!trigger) return false;
+  if (trigger.type === 'manualLap') return true;
+  if (trigger.type === 'or' || trigger.type === 'and') {
+    return trigger.triggers.some(triggerAllowsManualLap);
+  }
+  return false;
 }
 
 /**

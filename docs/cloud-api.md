@@ -103,3 +103,15 @@ step structure, so the same session always produces the same id.
 - Step `title` is capped at **13 characters**.
 - The documented character set excludes `@`, but Suunto's own sample guide uses
   it in a text field. We allow it; see the note in `src/domain/limits.ts`.
+- **A flat `trigger` (`{type: "stepDuration"|"stepDistance", value}`) gives the
+  athlete no way to skip the step early.** Neither this PDF's sample nor the
+  field reference documents it, but a real guide pulled live from a
+  Suunto-partner account (Runna) uses a **compound trigger** instead —
+  `{type: "or", triggers: [{type: "stepDuration"|"stepDistance", value}, {type: "manualLap"}]}`
+  — paired with `createManualLap: true` on that same step. Without both, the
+  watch's lap button does nothing during that step; a user comparing our
+  output against a working Runna guide is exactly how this was found. See the
+  header comment in `src/domain/guide.ts` and `src/compile/compile.ts`'s
+  `withSkip()`. Our compiler emits this by default (`allowSkip: true`
+  implicitly, per step) — pass `allowSkip: false` to opt a specific step out
+  and lock it to a flat trigger instead.
