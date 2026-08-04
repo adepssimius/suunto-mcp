@@ -1,13 +1,32 @@
 # Private guides API — confirmed
 
-**Status: fully mapped AND live-verified.** `GET suuntoplus/guides/items` was
-called for real, read-only, against a live account (2026-08-03) via
-`SUUNTO_MCP_BACKEND=private list_workouts`, using a session from
-`suuntool login`. It returned 10 real guides — correctly decoded `id`, `name`,
-`localDate`, `pinned`, `modificationTime` — including one named "Runna
-Repeats", confirming the Runna-sourced guides mentioned below are real and
-present on this account. No write call has been made; see "Remaining
-unknowns" below for what that would still confirm.
+**Status: fully mapped AND fully live-verified, reads and writes.** Full
+lifecycle exercised for real against a live account (2026-08-04) via the
+actual `suunto-mcp` binary, `SUUNTO_MCP_BACKEND=private`, using a session from
+`suuntool login`:
+
+1. `list_workouts` → 10 real guides, correctly decoded, including one named
+   "Runna Repeats" — confirms the Runna-sourced guides mentioned below are
+   genuinely on this account.
+2. `create_workout` with `externalId: "suunto-mcp-livetest-2026-08-04"` →
+   succeeded, real guide id `iwmrmx4t`.
+3. A second `create_workout` with the **same** `externalId` → **`409
+   Conflict`**, mapped correctly to `CONFLICT` by this server's own error
+   taxonomy. Confirms the dedup guarantee documented for the Cloud API also
+   holds here, despite `RemoteGuideInfo` never exposing `externalId` back to
+   the caller.
+4. Fetched the raw stored zip directly (`GET suuntoplus/guides/files/{id}`,
+   bypassing this library — see "Confirmed: externalId round-trips" below) and
+   found `externalId` present, byte-for-byte, in the server-stored
+   `guide.json`. So server-side dedup on it is real, not a documentation
+   artifact of the app the endpoint was designed for.
+5. `update_workout` → succeeded, same id, `modificationTime` advanced.
+6. `delete_workout` → succeeded.
+7. `list_workouts` again → back to the original 10, zero residue on the
+   account.
+
+Every open question from the first pass at this document is now closed. What
+follows is the mapping that made the live test possible in the first place.
 
 Mapped by static analysis of `com.stt.android.suunto` v6.11.8
 (pulled from a real device via `scripts/pull-apk.sh`, decompiled via
@@ -59,7 +78,7 @@ From `SuuntoPlusGuideRestAPI.java` (interface `SuuntoPlusGuideRestAPI`, package
 | Priority order | `GET suuntoplus/guides/priority` | `fetchPriorityOrder()` | `AskoResponse<RemoteGuidePriorities>` |
 | Set pinned | `PATCH suuntoplus/guides/items/{guideId}` | `updatePinnedStatus(id, body)` | `AskoResponse<RemoteGuideInfo>` |
 | Download zip | `GET suuntoplus/guides/files/{guideId}` | `downloadSource(id)` | raw zip bytes |
-| Download guide.json | `GET suuntoplus/guides/json/{guideId}?capabilities=` | `downloadJsonFile(id, capabilities)` | raw JSON |
+| Download guide.json | `GET suuntoplus/guides/json/{guideId}?capabilities=` | `downloadJsonFile(id, capabilities)` | raw JSON — **404'd live with no `capabilities` value sent**; `downloadSource` (below) worked fine and needs no query param, so use that instead |
 | Download plugin | `GET suuntoplus/guides/plugins/{guideId}?capabilities=` | `downloadZAPPFile(id, capabilities)` | raw binary |
 
 Create and update carry:
@@ -80,6 +99,22 @@ respect.
 Cloud API's `offset`/`limit`/`fileSince`, the mobile client fetches everything
 in one call and caches it in a local Room table (`suunto_plus_guides`, found in
 stage 1's string scan) rather than paging.
+
+## Confirmed live: `externalId` round-trips, and dedup is real
+
+`downloadSource(id)` (`GET suuntoplus/guides/files/{id}`) returns a
+**reconstituted** zip — `guide.json` + `icon.png` only, **no `manifest.json`**,
+unlike the 3-file zip you upload. The server parses what you send and
+re-serialises it (numeric fields came back as `60.0` where we'd sent `60`),
+so it is not a byte-for-byte echo.
+
+Inside that reconstituted `guide.json`, `externalId` was present exactly as
+uploaded — `"suunto-mcp-livetest-2026-08-04"` — confirming the server stores
+it even though `RemoteGuideInfo` never exposes it back to any caller. And a
+second `create_workout` with the same `externalId` returned **`409
+Conflict`**, matching the documented Cloud API's guarantee exactly. Treat
+create as genuinely idempotent on `externalId` here — this is no longer an
+inferred behavior, it's an observed one.
 
 ## Confirmed: the zip format is identical to the documented Cloud API
 
@@ -121,16 +156,17 @@ non-null only for guides installed from the SuuntoPlus Store, not
 user-created ones) and `ownerId`, `backgroundUrl`.
 
 **One field conspicuously absent: `externalId`.** The documented Cloud API's
-`RemoteGuideInfo`-equivalent includes it, and it's the whole idempotency
-story there — a 409 on a duplicate `externalId`. This mobile DTO has no such
-field, on create *or* list. That doesn't necessarily mean the server has
-forgotten the value — `guide.json`'s `externalId` may still be parsed and
-enforced server-side even though this particular client never reads it back —
-but it means **this backend cannot verify or rely on that behavior**. Treat
-`create()` as not-provably-idempotent here until a live call proves otherwise
-one way or the other. `downloadJsonFile(id)` would still show a stored
-`externalId`, since it's a byte-for-byte pass-through of what was uploaded —
-just not through the list/create response.
+`RemoteGuideInfo`-equivalent includes it, and it's the whole idempotency story
+there — a 409 on a duplicate `externalId`. This mobile DTO has no such field,
+on create *or* list. **Confirmed live (2026-08-04) that the server enforces it
+anyway**: a second `create_workout` with a previously-used `externalId`
+returned `409 Conflict`, and the stored `guide.json` (fetched via
+`downloadSource`, not `downloadJsonFile` — see below) contained the value
+byte-for-byte. The DTO omission is cosmetic; the server-side behavior matches
+the documented API exactly. `PrivateApiGuideBackend.toRef()` still reports
+`externalId: undefined` in its own `GuideRef`, and that's correct — it's an
+honest reflection of what the *response* contains, not a claim about what the
+server does with it.
 
 `UpdatePinnedStatusBody`: `{id: string, pinned: boolean}` — sent to the PATCH
 endpoint. Confirms the documented API's note that content updates don't touch
@@ -163,20 +199,26 @@ repo:
       `https://api.sports-tracker.com/apiserver/v1/` as its own `baseURL`, and
       `PrivateApiGuideBackend` using that exact value against
       `suuntoplus/guides/items` returned a correctly-decoded real guide list.
-      No literal-concatenation proof was needed after all — the live call
-      settled it directly.
 - [x] ~~Whether `STTAuthorization` from a `suuntool` session is accepted here~~
       — **confirmed live**, no separate login or credential needed.
-- [ ] Whether `Client-Id` is enforced or just logged (list works with it sent;
-      haven't tried omitting it).
-- [ ] Whether `externalId` survives a real create/update round-trip in
-      `guide.json` even though it's absent from `RemoteGuideInfo` — needs a
-      write, not attempted yet.
+- [x] ~~Whether `externalId` survives a real create/update round-trip~~ —
+      **confirmed live**: stored server-side, and a duplicate genuinely 409s.
+      See "Confirmed live: `externalId` round-trips" above.
+- [x] ~~Create/update/delete/list all work~~ — **confirmed live**, full
+      lifecycle, see the top of this document.
+- [ ] Whether `Client-Id` is enforced or just logged (every call so far sent
+      it and succeeded; haven't tried omitting it).
 - [ ] Whether the account needs to be the *creator* of a guide to update/delete
       it (mirrors the documented API's "belongs to someone else" 404), and
       what happens to guides created by a *different* client (Client-Id) — e.g.
       the "Runna Repeats" guide seen in the live list, created by Runna's
-      Client-Id, not ours.
+      Client-Id, not ours. Untested: only this account's own
+      `suunto-mcp`-created guide was ever mutated.
+- [ ] `downloadJsonFile` (the endpoint with a `capabilities` query param) 404'd
+      live with no value sent for `capabilities`. `downloadSource` (no query
+      param, returns a full zip) works fine and was used instead — not worth
+      chasing further unless a capability-adjusted JSON view specifically
+      matters later.
 
 ## Ground rules (unchanged)
 
